@@ -47,6 +47,7 @@ CREATE TABLE files (
     make TEXT,
     model TEXT,
     hash TEXT,
+    sha256 TEXT,
     mime TEXT,
     exiftool_json TEXT,
     indexed_at TEXT NOT NULL,
@@ -81,6 +82,7 @@ CREATE INDEX idx_files_path ON files(path);
 CREATE INDEX idx_files_type ON files(type);
 CREATE INDEX idx_files_mtime ON files(mtime);
 CREATE INDEX idx_files_taken_ts ON files(taken_ts);
+CREATE INDEX idx_files_sha256 ON files(sha256);
 CREATE INDEX idx_tags_tag ON tags(tag);
 CREATE INDEX idx_file_tags_tag_file ON file_tags(tag_id, file_id);
 CREATE INDEX idx_dirs_root ON directories(root_id);

@@ -587,7 +587,8 @@ def _process_file(
     width, height = parse_dimensions(exif_record or {})
     lat, lon = parse_gps(exif_record or {})
     make, model = parse_make_model(exif_record or {})
-    hash_value = _hash_file(file_path, config.hash_mode)
+    sha256_value = _hash_file(file_path, "sha256")
+    hash_value = sha256_value if config.hash_mode == "sha256" else _hash_file(file_path, config.hash_mode)
     mime = _mime_type(file_path, config.mime_mode)
     exiftool_json = json.dumps(exif_record, ensure_ascii=False) if exif_record else None
 
@@ -614,6 +615,7 @@ def _process_file(
                 make=make,
                 model=model,
                 hash_value=hash_value,
+                sha256_value=sha256_value,
                 mime=mime,
                 exiftool_json=exiftool_json,
             )
@@ -870,8 +872,12 @@ def _filter_changed_files(
         if int(row["mtime"]) != int(stat.st_mtime) or int(row["size"]) != int(stat.st_size):
             changed.append(path)
             continue
+        # If SHA-256 is missing, we need to reprocess to populate v2 object identity.
+        if not row["sha256"]:
+            changed.append(path)
+            continue
         if hash_mode != "none":
-            # If hash is missing, we need to reprocess to populate it.
+            # Preserve legacy behavior for optional `hash` column variants.
             if not row["hash"]:
                 changed.append(path)
         # Unchanged otherwise.

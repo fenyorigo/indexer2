@@ -7,7 +7,7 @@ from typing import Optional
 
 from app.core.models import RootRecord
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 @dataclass
@@ -44,17 +44,26 @@ class Database:
         elif version == 1:
             self._migrate_v1_to_v2()
             self._migrate_v2_to_v3()
+            self._migrate_v3_to_v4()
+            self._migrate_v4_to_v5()
             cur.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             self.conn.commit()
         elif version == 2:
             self._migrate_v2_to_v3()
+            self._migrate_v3_to_v4()
+            self._migrate_v4_to_v5()
             cur.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             self.conn.commit()
         elif version == 3:
             self._migrate_v3_to_v4()
+            self._migrate_v4_to_v5()
             cur.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             self.conn.commit()
-        elif version < SCHEMA_VERSION:
+        elif version == 4:
+            self._migrate_v4_to_v5()
+            cur.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            self.conn.commit()
+        elif version > SCHEMA_VERSION:
             raise RuntimeError(f"Unsupported schema version: {version}")
 
     def _create_schema(self) -> None:
@@ -123,6 +132,7 @@ class Database:
                 make TEXT,
                 model TEXT,
                 hash TEXT,
+                sha256 TEXT,
                 mime TEXT,
                 exiftool_json TEXT,
                 indexed_at TEXT NOT NULL,
@@ -172,6 +182,7 @@ class Database:
         cur.execute("CREATE INDEX idx_files_type ON files(type)")
         cur.execute("CREATE INDEX idx_files_mtime ON files(mtime)")
         cur.execute("CREATE INDEX idx_files_taken_ts ON files(taken_ts)")
+        cur.execute("CREATE INDEX idx_files_sha256 ON files(sha256)")
         cur.execute("CREATE INDEX idx_tags_tag ON tags(tag)")
         cur.execute("CREATE INDEX idx_file_tags_tag_file ON file_tags(tag_id, file_id)")
         cur.execute("CREATE INDEX idx_dirs_root ON directories(root_id)")
@@ -303,6 +314,7 @@ class Database:
         make: Optional[str] = None,
         model: Optional[str] = None,
         hash_value: Optional[str] = None,
+        sha256_value: Optional[str] = None,
         mime: Optional[str] = None,
         exiftool_json: Optional[str] = None,
     ) -> int:
@@ -310,8 +322,8 @@ class Database:
             """
             INSERT OR REPLACE INTO files
             (directory_id, path, rel_path, name, ext, size, mtime, ctime, taken_ts, taken_src, type,
-             width, height, lat, lon, make, model, hash, mime, exiftool_json, indexed_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+             width, height, lat, lon, make, model, hash, sha256, mime, exiftool_json, indexed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
             """,
             (
                 directory_id,
@@ -332,6 +344,7 @@ class Database:
                 make,
                 model,
                 hash_value,
+                sha256_value,
                 mime,
                 exiftool_json,
             ),
@@ -484,6 +497,12 @@ class Database:
         cur.execute("ALTER TABLE meta ADD COLUMN video_tags INTEGER NOT NULL DEFAULT 0")
         cur.execute("ALTER TABLE meta ADD COLUMN video_tag_blacklist_sha256 TEXT")
 
+    def _migrate_v4_to_v5(self) -> None:
+        cur = self.conn.cursor()
+        cur.execute("ALTER TABLE files ADD COLUMN sha256 TEXT")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_files_sha256 ON files(sha256)")
+        cur.execute("UPDATE files SET sha256 = lower(hash) WHERE sha256 IS NULL AND hash IS NOT NULL AND length(hash) = 64")
+
     def update_scan_meta(
         self,
         *,
@@ -549,7 +568,7 @@ class Database:
             chunk = paths[i : i + chunk_size]
             placeholders = ",".join("?" for _ in chunk)
             cur = self.conn.execute(
-                f"SELECT path, size, mtime, hash FROM files WHERE path IN ({placeholders})",
+                f"SELECT path, size, mtime, hash, sha256 FROM files WHERE path IN ({placeholders})",
                 chunk,
             )
             for row in cur.fetchall():

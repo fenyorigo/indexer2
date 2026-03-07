@@ -35,4 +35,9 @@ def test_db_init_and_version(tmp_path: Path) -> None:
     assert "include_audio" in meta_cols
     assert "video_tags" in meta_cols
     assert "video_tag_blacklist_sha256" in meta_cols
+    file_cols = {
+        row[1]
+        for row in conn.execute("PRAGMA table_info(files)").fetchall()
+    }
+    assert "sha256" in file_cols
     conn.close()
