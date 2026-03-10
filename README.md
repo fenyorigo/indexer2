@@ -60,6 +60,18 @@ Fedora example:
 python3 -m app --cli --db /home/user/photos.db --media-root /home/user/Pictures
 ```
 
+Fedora wrapper example:
+```bash
+./webalbum-indexer \
+  --version 2 \
+  --db /var/lib/webalbum/index2/build/images2_$(date +%Y%m%d_%H%M%S).db \
+  --root /data/photos \
+  --errors-log /var/log/webalbum/indexer2-errors.jsonl \
+  --publish
+```
+
+The wrapper script [webalbum-indexer](/Users/bajanp/Projects/indexer2/webalbum-indexer) supports `--version 1|2` and switches the install base, live DB path, build directory, and backup directory together.
+
 macOS example:
 ```bash
 python3 -m app --cli --db /Users/you/photos.db --media-root /Users/you/Pictures

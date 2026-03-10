@@ -1,0 +1,121 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+VERSION="1"
+PYTHON="/usr/bin/python3"
+
+DB=""
+ROOT=""
+ERRORS_LOG=""
+PUBLISH=0
+
+usage() {
+  cat >&2 <<EOF
+Usage:
+  webalbum-indexer --db <output.db> --root <photo-dir> --errors-log <errors.jsonl> [--publish] [--version 1|2]
+
+Rules:
+  - This tool MUST NOT write directly to the live DB.
+  - Recommended output DB:
+      <build_dir>/images_<timestamp>.db
+
+Options:
+  --version  Select indexer generation (default: 1)
+  --publish  After successful build, atomically swap the new DB into place as the live DB
+             (backs up the previous live DB first).
+EOF
+  exit 1
+}
+
+die() { echo "ERROR: $*" >&2; exit 2; }
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --version)    VERSION="${2:-}"; shift 2 ;;
+    --db)         DB="${2:-}"; shift 2 ;;
+    --root)       ROOT="${2:-}"; shift 2 ;;
+    --errors-log) ERRORS_LOG="${2:-}"; shift 2 ;;
+    --publish)    PUBLISH=1; shift ;;
+    -h|--help)    usage ;;
+    *)            die "Unknown argument: $1 (use --help)" ;;
+  esac
+done
+
+case "$VERSION" in
+  1)
+    INDEXER_BASE="/usr/local/lib/indexer"
+    LIVE_DB="/var/lib/webalbum/index/images.db"
+    BUILD_DIR="/var/lib/webalbum/index/build"
+    BACKUP_DIR="/var/lib/webalbum/index/backup"
+    ;;
+  2)
+    INDEXER_BASE="/usr/local/lib/indexer2"
+    LIVE_DB="/var/lib/webalbum/index2/images2.db"
+    BUILD_DIR="/var/lib/webalbum/index2/build"
+    BACKUP_DIR="/var/lib/webalbum/index2/backup"
+    ;;
+  *)
+    die "--version must be 1 or 2"
+    ;;
+esac
+
+INDEXER_APP="$INDEXER_BASE/app"
+
+[[ -n "$DB" && -n "$ROOT" && -n "$ERRORS_LOG" ]] || usage
+[[ -d "$INDEXER_BASE" ]] || die "$INDEXER_BASE does not exist"
+[[ -d "$INDEXER_APP" ]] || die "$INDEXER_APP does not exist (expected Python package 'app' under $INDEXER_BASE)"
+[[ -x "$PYTHON" ]] || die "python3 not found at $PYTHON"
+[[ -d "$ROOT" ]] || die "Scan root does not exist: $ROOT"
+
+if [[ "$DB" == "$LIVE_DB" ]]; then
+  die "Refusing to write to live DB path: $LIVE_DB. Use a build path under $BUILD_DIR."
+fi
+
+mkdir -p "$BUILD_DIR" "$BACKUP_DIR" "$(dirname "$ERRORS_LOG")" "$(dirname "$DB")"
+
+if [[ -e "$DB" ]]; then
+  if [[ ! -t 0 ]]; then
+    die "Output DB already exists: $DB (non-interactive). Choose a new filename."
+  fi
+  read -r -p "Output DB exists: $DB. Overwrite? [y/N] " ans
+  case "${ans,,}" in
+    y|yes) rm -f -- "$DB" ;;
+    *) echo "Aborted."; exit 0 ;;
+  esac
+fi
+
+echo "Building index DB (staging)"
+echo "  Version:  $VERSION"
+echo "  Root:     $ROOT"
+echo "  OutputDB: $DB"
+echo "  Errors:   $ERRORS_LOG"
+echo "  Publish:  $PUBLISH"
+
+cd -- "$INDEXER_BASE"
+
+TMP_DB="${DB}.tmp.$$"
+rm -f -- "$TMP_DB"
+
+"$PYTHON" -m app \
+  --cli \
+  --db "$TMP_DB" \
+  --root "$ROOT" \
+  --errors-log "$ERRORS_LOG"
+
+[[ -s "$TMP_DB" ]] || die "Build produced empty DB: $TMP_DB"
+
+mv -f -- "$TMP_DB" "$DB"
+echo "Build complete: $DB"
+
+if [[ "$PUBLISH" -eq 1 ]]; then
+  TS="$(date +%Y%m%d_%H%M%S)"
+  LIVE_BASE="$(basename "$LIVE_DB")"
+
+  if [[ -f "$LIVE_DB" ]]; then
+    cp -p -- "$LIVE_DB" "$BACKUP_DIR/${LIVE_BASE}.${TS}"
+    echo "Backed up live DB to: $BACKUP_DIR/${LIVE_BASE}.${TS}"
+  fi
+
+  mv -f -- "$DB" "$LIVE_DB"
+  echo "Published new live DB: $LIVE_DB"
+fi
