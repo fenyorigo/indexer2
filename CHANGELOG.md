@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.6.2 - 2026-03-13
+
+### Added
+- Added single-file refresh support for worker-driven media updates via `--refresh-file` and explicit `--config`.
+
+### Fixed
+- Removed interactive dry-run prompting from non-interactive CLI usage so worker-triggered refresh runs can complete unattended.
+- Added refresh-file specific text output handling and JSON-safe worker integration.
+
 ## 1.6.1 - 2026-02-22
 
 ### Fixed

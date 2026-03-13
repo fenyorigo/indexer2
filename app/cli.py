@@ -12,7 +12,7 @@ from app.core.config import load_config
 from app.core.db import Database
 from app.core.exiftool import find_exiftool
 from app.core.models import DirectorySelection, ScanResult
-from app.core.scanner import scan
+from app.core.scanner import refresh_file, scan
 
 TAKEN_SRC_ORDER = [
     "SubSecDateTimeOriginal",
@@ -101,6 +101,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--json", action="store_true", help="Print report as JSON")
     parser.add_argument("--report", type=Path, help="Write report to file")
     parser.add_argument("--errors-log", type=Path, help="Errors JSONL log path")
+    parser.add_argument("--config", type=Path, help="Path to config.yaml (default: ./config.yaml)")
+    parser.add_argument("--refresh-file", type=Path, help="Refresh exactly one file relative to --media-root")
     parser.add_argument("--no-progress", action="store_true", help="Disable progress output")
     parser.add_argument(
         "--progress-every",
@@ -195,6 +197,31 @@ def _build_report(
 
 
 def _write_report_text(payload: dict) -> str:
+    if payload.get("mode") == "refresh_file":
+        lines = [
+            f"Version: {payload.get('version', '')}",
+            f"Mode: refresh_file",
+            f"Media root: {payload.get('media_root', '')}",
+            f"DB media path: {payload.get('db_media_path', '')}",
+            f"Config: {payload.get('config_path', '')}",
+            f"File: {payload.get('refresh_file', '')}",
+            f"Warnings: {payload.get('warnings', 0)}",
+            f"Errors: {payload.get('errors', 0)}",
+            f"Indexed images: {payload.get('images', 0)}",
+            f"Indexed videos: {payload.get('videos', 0)}",
+            f"Tags added: {payload.get('tags_added', 0)}",
+            f"Tag links added: {payload.get('file_tag_links_added', 0)}",
+            f"Category tags added: {payload.get('category_tags_added', 0)}",
+            f"Value tags added: {payload.get('value_tags_added', 0)}",
+        ]
+        warning = payload.get("warning")
+        if warning:
+            lines.append(f"ExifTool warning: {warning}")
+        if payload.get("errors") and payload.get("errors_log_path"):
+            lines.append(f"See errors log: {payload.get('errors_log_path')}")
+        lines.append(f"Cancelled: {payload.get('cancelled', False)}")
+        return "\n".join(lines)
+
     lines = [
         f"Version: {payload.get('version', '')}",
         f"Media root: {payload.get('media_root', '')}",
@@ -239,8 +266,6 @@ def main(argv: list[str] | None = None) -> int:
         value = _prompt_path("Scan root directory: ")
         if value:
             args.media_root = Path(value)
-    if args.dry_run is False and args.media_root is not None:
-        args.dry_run = _prompt_yes_no("Dry run?", default=False)
 
     if not args.db or not args.media_root:
         print("Missing required --db or --media-root")
@@ -268,7 +293,7 @@ def main(argv: list[str] | None = None) -> int:
     args.include_docs = include_docs
     args.include_audio = include_audio
 
-    config_path = Path("config.yaml")
+    config_path = args.config if args.config else Path("config.yaml")
     config = load_config(config_path)
     if not find_exiftool(config.exiftool_path):
         print("ExifTool not found. Install it or set exiftool_path in config.yaml")
@@ -298,46 +323,73 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ExifTool warning: {message}", file=sys.stderr)
 
     try:
-        selections = [
-            DirectorySelection(
-                path=media_root_path,
-                recursive=True,
-                include_root_files=args.include_root_files,
-            )
-        ]
-
         errors_log_path = _resolve_errors_log_path(args, config, db_path)
         db = Database(Path(":memory:")) if args.dry_run else Database(db_path)
-        result = scan(
-            db,
-            config,
-            media_root_path,
-            selections=selections,
-            db_media_root=db_media_path,
-            dry_run=args.dry_run,
-            changed_only=args.changed_only,
-            include_videos=include_videos,
-            include_docs=include_docs,
-            include_audio=include_audio,
-            images_only=args.images_only,
-            video_tags=args.video_tags,
-            video_tag_blacklist_path=args.video_tag_blacklist,
-            cancel_check=lambda: cancelled,
-            progress_cb=None,
-            file_progress_cb=lambda p: file_progress(p),
-            warning_cb=warning_log,
-            errors_log_path=errors_log_path,
-            db_path=db_path,
-        )
-        db.close()
-        taken_src_dist = {}
-        if not args.dry_run:
-            db = Database(db_path)
-            taken_src_dist = db.taken_src_distribution(str(db_media_path))
+        if args.refresh_file:
+            refresh_target = args.refresh_file
+            if not refresh_target.is_absolute():
+                refresh_target = media_root_path / refresh_target
+            result_payload = refresh_file(
+                db,
+                config,
+                media_root_path,
+                refresh_target,
+                db_media_root=db_media_path,
+                dry_run=args.dry_run,
+                video_tags=True,
+                errors_log_path=errors_log_path,
+                db_path=db_path,
+            )
             db.close()
-        payload = _build_report(result, taken_src_dist, media_root_path, db_media_path, args)
-        payload["errors_log_path"] = str(errors_log_path) if errors_log_path else ""
-        payload["config_path"] = str(config_path)
+            payload = {
+                "version": __version__,
+                "mode": "refresh_file",
+                "root": str(media_root_path),
+                "media_root": str(media_root_path),
+                "db_media_path": str(db_media_path),
+                "config_path": str(config_path),
+                "errors_log_path": str(errors_log_path) if errors_log_path else "",
+                "refresh_file": str(refresh_target),
+                **result_payload,
+            }
+        else:
+            selections = [
+                DirectorySelection(
+                    path=media_root_path,
+                    recursive=True,
+                    include_root_files=args.include_root_files,
+                )
+            ]
+            result = scan(
+                db,
+                config,
+                media_root_path,
+                selections=selections,
+                db_media_root=db_media_path,
+                dry_run=args.dry_run,
+                changed_only=args.changed_only,
+                include_videos=include_videos,
+                include_docs=include_docs,
+                include_audio=include_audio,
+                images_only=args.images_only,
+                video_tags=args.video_tags,
+                video_tag_blacklist_path=args.video_tag_blacklist,
+                cancel_check=lambda: cancelled,
+                progress_cb=None,
+                file_progress_cb=lambda p: file_progress(p),
+                warning_cb=warning_log,
+                errors_log_path=errors_log_path,
+                db_path=db_path,
+            )
+            db.close()
+            taken_src_dist = {}
+            if not args.dry_run:
+                db = Database(db_path)
+                taken_src_dist = db.taken_src_distribution(str(db_media_path))
+                db.close()
+            payload = _build_report(result, taken_src_dist, media_root_path, db_media_path, args)
+            payload["errors_log_path"] = str(errors_log_path) if errors_log_path else ""
+            payload["config_path"] = str(config_path)
     except KeyboardInterrupt:
         cancelled = True
         payload = {

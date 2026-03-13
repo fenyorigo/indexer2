@@ -442,6 +442,96 @@ def scan(
     return ScanResult(stats=stats, cancelled=cancelled)
 
 
+def refresh_file(
+    db: Database,
+    config: AppConfig,
+    root_path: Path,
+    file_path: Path,
+    *,
+    db_media_root: Optional[Path] = None,
+    dry_run: bool = False,
+    video_tags: bool = True,
+    errors_log_path: Optional[Path] = None,
+    db_path: Optional[Path] = None,
+) -> dict:
+    media_root = root_path
+    target_root = db_media_root if db_media_root is not None else media_root
+    if not file_path.exists() or not file_path.is_file():
+        raise ValueError(f"File must exist: {file_path}")
+    if _is_hidden(file_path):
+        raise ValueError(f"Hidden files are not indexable: {file_path}")
+    if not _is_indexable_file(file_path, config, True, True, True):
+        raise ValueError(f"Unsupported file type for refresh: {file_path}")
+
+    exiftool_path = find_exiftool(config.exiftool_path)
+    if not exiftool_path:
+        raise RuntimeError("ExifTool not found")
+
+    errors_log = _resolve_errors_log_path(errors_log_path, db_path)
+    exif_records, warning = run_exiftool(exiftool_path, [file_path])
+    exif_record = None
+    for record in exif_records:
+        if str(record.get("SourceFile", "")) == str(file_path):
+            exif_record = record
+            break
+    if exif_record is None and exif_records:
+        exif_record = exif_records[0]
+
+    root_id = db.ensure_root(str(target_root)) if not dry_run else -1
+    stats = ScanStats(
+        directories=0,
+        images=0,
+        videos=0,
+        warnings=1 if warning else 0,
+        errors=0,
+        tags_added=0,
+        file_tag_links_added=0,
+        category_tags_added=0,
+        value_tags_added=0,
+    )
+
+    if not dry_run:
+        db.begin()
+    stats, had_error = _process_file(
+        db,
+        config,
+        root_id,
+        media_root,
+        target_root,
+        file_path,
+        stats,
+        exif_record,
+        dry_run=dry_run,
+        errors_log=errors_log,
+        directory_path=file_path.parent,
+        video_tags=video_tags,
+        video_tag_blacklist=set(),
+    )
+    if had_error:
+        if not dry_run and db.conn.in_transaction:
+            db.rollback()
+        raise RuntimeError(f"Failed to refresh file index: {file_path}")
+
+    if not dry_run:
+        if db.conn.in_transaction:
+            db.commit()
+        db.prune_orphan_tags()
+        db.update_root_scan_time(root_id)
+
+    return {
+        "rel_path": str(file_path.relative_to(media_root)),
+        "warning": warning,
+        "warnings": stats.warnings,
+        "errors": stats.errors,
+        "images": stats.images,
+        "videos": stats.videos,
+        "tags_added": stats.tags_added,
+        "file_tag_links_added": stats.file_tag_links_added,
+        "category_tags_added": stats.category_tags_added,
+        "value_tags_added": stats.value_tags_added,
+        "cancelled": False,
+    }
+
 def _ensure_directory_chain(
     db: Database,
     root_id: int,
