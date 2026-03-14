@@ -318,36 +318,52 @@ class Database:
         mime: Optional[str] = None,
         exiftool_json: Optional[str] = None,
     ) -> int:
+        existing = self.conn.execute("SELECT id FROM files WHERE path = ?", (path,)).fetchone()
+        params = (
+            directory_id,
+            path,
+            rel_path,
+            name,
+            ext,
+            size,
+            mtime,
+            ctime,
+            taken_ts,
+            taken_src,
+            file_type,
+            width,
+            height,
+            lat,
+            lon,
+            make,
+            model,
+            hash_value,
+            sha256_value,
+            mime,
+            exiftool_json,
+        )
+        if existing:
+            file_id = int(existing[0])
+            self.conn.execute(
+                """
+                UPDATE files
+                SET directory_id = ?, path = ?, rel_path = ?, name = ?, ext = ?, size = ?, mtime = ?, ctime = ?,
+                    taken_ts = ?, taken_src = ?, type = ?, width = ?, height = ?, lat = ?, lon = ?, make = ?,
+                    model = ?, hash = ?, sha256 = ?, mime = ?, exiftool_json = ?, indexed_at = datetime('now')
+                WHERE id = ?
+                """,
+                params + (file_id,),
+            )
+            return file_id
+
         cur = self.conn.execute(
             """
-            INSERT OR REPLACE INTO files
+            INSERT INTO files
             (directory_id, path, rel_path, name, ext, size, mtime, ctime, taken_ts, taken_src, type,
              width, height, lat, lon, make, model, hash, sha256, mime, exiftool_json, indexed_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
             """,
-            (
-                directory_id,
-                path,
-                rel_path,
-                name,
-                ext,
-                size,
-                mtime,
-                ctime,
-                taken_ts,
-                taken_src,
-                file_type,
-                width,
-                height,
-                lat,
-                lon,
-                make,
-                model,
-                hash_value,
-                sha256_value,
-                mime,
-                exiftool_json,
-            ),
+            params,
         )
         return int(cur.lastrowid)
 
