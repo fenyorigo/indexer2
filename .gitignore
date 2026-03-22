@@ -1,6 +1,7 @@
 .venv/
 __pycache__/
 *.pyc
+config.yaml
 *.db
 *.sqlite
 *.sqlite3

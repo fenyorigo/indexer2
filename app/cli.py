@@ -13,7 +13,7 @@ from app.core.config import load_config
 from app.core.db import Database
 from app.core.exiftool import find_exiftool
 from app.core.models import DirectorySelection, ScanResult
-from app.core.scanner import refresh_file, scan
+from app.core.scanner import move_file, refresh_file, scan
 
 TAKEN_SRC_ORDER = [
     "SubSecDateTimeOriginal",
@@ -104,6 +104,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--errors-log", type=Path, help="Errors JSONL log path")
     parser.add_argument("--config", type=Path, help="Path to config.yaml (default: ./config.yaml)")
     parser.add_argument("--refresh-file", type=Path, help="Refresh exactly one file relative to --media-root")
+    parser.add_argument("--move-file", type=Path, help="Remove old DB path and refresh new file path")
+    parser.add_argument("--to", type=Path, help="New relative path used with --move-file")
     parser.add_argument("--retag-map", type=Path, help="Run maintenance retag mode using a two-column CSV map")
     parser.add_argument("--retag-report", type=Path, default=Path("retag_report.csv"), help="Retag CSV report path")
     parser.add_argument("--retag-log", type=Path, default=Path("retag.log"), help="Retag log file path")
@@ -224,6 +226,38 @@ def _write_report_text(payload: dict) -> str:
             f"Category tags added: {payload.get('category_tags_added', 0)}",
             f"Value tags added: {payload.get('value_tags_added', 0)}",
         ]
+        warning = payload.get("warning")
+        if warning:
+            lines.append(f"ExifTool warning: {warning}")
+        if payload.get("errors") and payload.get("errors_log_path"):
+            lines.append(f"See errors log: {payload.get('errors_log_path')}")
+        lines.append(f"Cancelled: {payload.get('cancelled', False)}")
+        return "\n".join(lines)
+
+    if payload.get("mode") == "move_file":
+        lines = [
+            f"Version: {payload.get('version', '')}",
+            "Mode: move_file",
+            f"Media root: {payload.get('media_root', '')}",
+            f"DB media path: {payload.get('db_media_path', '')}",
+            f"Config: {payload.get('config_path', '')}",
+            f"Old relative path: {payload.get('old_rel_path', '')}",
+            f"New relative path: {payload.get('new_rel_path', '')}",
+            f"Old DB path removed: {payload.get('old_path_removed', False)}",
+            f"Old DB path missing: {payload.get('old_path_missing', False)}",
+            f"Warnings: {payload.get('warnings', 0)}",
+            f"Errors: {payload.get('errors', 0)}",
+            f"Indexed images: {payload.get('images', 0)}",
+            f"Indexed videos: {payload.get('videos', 0)}",
+            f"Tags added: {payload.get('tags_added', 0)}",
+            f"Tag links added: {payload.get('file_tag_links_added', 0)}",
+            f"Category tags added: {payload.get('category_tags_added', 0)}",
+            f"Value tags added: {payload.get('value_tags_added', 0)}",
+        ]
+        pruned_directories = payload.get("pruned_directories", [])
+        if pruned_directories:
+            lines.append("Pruned directories:")
+            lines.extend(f"  {path}" for path in pruned_directories)
         warning = payload.get("warning")
         if warning:
             lines.append(f"ExifTool warning: {warning}")
@@ -356,10 +390,50 @@ def main(argv: list[str] | None = None) -> int:
     try:
         errors_log_path = _resolve_errors_log_path(args, config, db_path)
         db = Database(Path(":memory:")) if args.dry_run else Database(db_path)
+        if args.move_file and not args.to:
+            raise ValueError("--move-file requires --to")
+        if args.to and not args.move_file:
+            raise ValueError("--to requires --move-file")
+        if args.move_file and args.refresh_file:
+            raise ValueError("--move-file cannot be combined with --refresh-file")
+        if args.move_file and args.retag_map:
+            raise ValueError("--move-file cannot be combined with --retag-map")
         if args.retag_map and args.refresh_file:
             raise ValueError("--retag-map cannot be combined with --refresh-file")
 
-        if args.retag_map:
+        if args.move_file:
+            move_target = args.move_file
+            if move_target.is_absolute():
+                move_target = move_target.relative_to(media_root_path)
+            new_target = args.to
+            if new_target is None:
+                raise ValueError("--to is required with --move-file")
+            if new_target.is_absolute():
+                new_target = new_target.relative_to(media_root_path)
+            result_payload = move_file(
+                db,
+                config,
+                media_root_path,
+                move_target,
+                new_target,
+                db_media_root=db_media_path,
+                dry_run=args.dry_run,
+                video_tags=True,
+                errors_log_path=errors_log_path,
+                db_path=db_path,
+            )
+            db.close()
+            payload = {
+                "version": __version__,
+                "mode": "move_file",
+                "root": str(media_root_path),
+                "media_root": str(media_root_path),
+                "db_media_path": str(db_media_path),
+                "config_path": str(config_path),
+                "errors_log_path": str(errors_log_path) if errors_log_path else "",
+                **result_payload,
+            }
+        elif args.retag_map:
             retag_dry_run = args.dry_run or not args.retag_apply
             if not args.retag_map.is_file():
                 raise ValueError(f"Retag map file not found: {args.retag_map}")

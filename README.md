@@ -60,6 +60,7 @@ python3 -m app --cli --db /path/to/photos.db --media-root /path/to/photos --erro
 
 ### Retag
 `retag` rewrites media metadata from a two-column CSV map and refreshes SQLite after each successful file update.
+It was added to `indexer2` as a maintenance CLI tool because `retag` and `indexer2` are operationally interdependent around the same SQLite database: retag changes file metadata, and `indexer2` is responsible for bringing the SQLite index back into sync. The necessary supporting changes for that workflow are now part of `indexer2`.
 
 Dry-run example:
 ```bash

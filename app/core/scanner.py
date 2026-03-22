@@ -532,6 +532,76 @@ def refresh_file(
         "cancelled": False,
     }
 
+
+def move_file(
+    db: Database,
+    config: AppConfig,
+    root_path: Path,
+    old_rel_path: Path,
+    new_rel_path: Path,
+    *,
+    db_media_root: Optional[Path] = None,
+    dry_run: bool = False,
+    video_tags: bool = True,
+    errors_log_path: Optional[Path] = None,
+    db_path: Optional[Path] = None,
+) -> dict:
+    media_root = root_path
+    target_root = db_media_root if db_media_root is not None else media_root
+
+    old_rel = str(old_rel_path).strip().replace("\\", "/")
+    new_rel = str(new_rel_path).strip().replace("\\", "/")
+    if old_rel == "":
+        raise ValueError("Old relative path is required")
+    if new_rel == "":
+        raise ValueError("New relative path is required")
+
+    old_db_path = str(_map_source_to_db_path(media_root, target_root, media_root / old_rel_path))
+    new_file_path = media_root / new_rel_path
+    if not new_file_path.exists() or not new_file_path.is_file():
+        raise ValueError(f"New file path must exist: {new_file_path}")
+
+    if not dry_run:
+        db.begin()
+
+    removed_row = None
+    pruned_dirs: list[str] = []
+    old_path_missing = False
+    try:
+        if not dry_run:
+            removed_row = db.delete_file_by_path(old_db_path)
+            if removed_row is None:
+                old_path_missing = True
+            else:
+                pruned_dirs = db.prune_empty_directories_upward(int(removed_row["directory_id"]))
+
+        refreshed = refresh_file(
+            db,
+            config,
+            root_path,
+            new_file_path,
+            db_media_root=db_media_root,
+            dry_run=dry_run,
+            video_tags=video_tags,
+            errors_log_path=errors_log_path,
+            db_path=db_path,
+        )
+        if not dry_run and db.conn.in_transaction:
+            db.commit()
+    except Exception:
+        if not dry_run and db.conn.in_transaction:
+            db.rollback()
+        raise
+
+    refreshed["mode"] = "move_file"
+    refreshed["old_rel_path"] = old_rel
+    refreshed["new_rel_path"] = new_rel
+    refreshed["old_db_path"] = old_db_path
+    refreshed["old_path_removed"] = removed_row is not None
+    refreshed["old_path_missing"] = old_path_missing
+    refreshed["pruned_directories"] = pruned_dirs
+    return refreshed
+
 def _ensure_directory_chain(
     db: Database,
     root_id: int,

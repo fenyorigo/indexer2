@@ -390,6 +390,73 @@ class Database:
     def clear_file_tags(self, file_id: int) -> None:
         self.conn.execute("DELETE FROM file_tags WHERE file_id = ?", (file_id,))
 
+    def get_directory_id_by_path(self, path: str) -> Optional[int]:
+        cur = self.conn.execute("SELECT id FROM directories WHERE path = ?", (path,))
+        row = cur.fetchone()
+        return int(row[0]) if row else None
+
+    def get_file_by_path(self, path: str) -> Optional[sqlite3.Row]:
+        cur = self.conn.execute(
+            "SELECT id, directory_id, path, rel_path FROM files WHERE path = ?",
+            (path,),
+        )
+        return cur.fetchone()
+
+    def delete_file_by_path(self, path: str) -> Optional[dict[str, int | str]]:
+        row = self.get_file_by_path(path)
+        if row is None:
+            return None
+
+        file_id = int(row["id"])
+        directory_id = int(row["directory_id"])
+        rel_path = str(row["rel_path"])
+        self.conn.execute("DELETE FROM file_tags WHERE file_id = ?", (file_id,))
+        self.conn.execute("DELETE FROM files WHERE id = ?", (file_id,))
+        return {
+            "file_id": file_id,
+            "directory_id": directory_id,
+            "path": path,
+            "rel_path": rel_path,
+        }
+
+    def directory_has_children(self, directory_id: int) -> bool:
+        file_row = self.conn.execute(
+            "SELECT 1 FROM files WHERE directory_id = ? LIMIT 1",
+            (directory_id,),
+        ).fetchone()
+        if file_row is not None:
+            return True
+
+        dir_row = self.conn.execute(
+            "SELECT 1 FROM directories WHERE parent_id = ? LIMIT 1",
+            (directory_id,),
+        ).fetchone()
+        return dir_row is not None
+
+    def prune_empty_directories_upward(self, directory_id: int) -> list[str]:
+        pruned: list[str] = []
+        current_id = directory_id
+
+        while current_id > 0:
+            row = self.conn.execute(
+                "SELECT id, parent_id, path, depth FROM directories WHERE id = ?",
+                (current_id,),
+            ).fetchone()
+            if row is None:
+                break
+
+            depth = int(row["depth"])
+            if depth <= 0 or self.directory_has_children(current_id):
+                break
+
+            path = str(row["path"])
+            parent_id = int(row["parent_id"]) if row["parent_id"] is not None else 0
+            self.conn.execute("DELETE FROM directories WHERE id = ?", (current_id,))
+            pruned.append(path)
+            current_id = parent_id
+
+        return pruned
+
     def prune_orphan_tags(self) -> int:
         cur = self.conn.execute(
             """
