@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.7.0 - 2026-03-22
+
+### Added
+- Imported `retag` into `indexer2` as a dedicated maintenance CLI mode via `--retag-map`.
+- Added per-file metadata rewrite reporting and logfile output for retag runs.
+- Added retag tests covering CLI parsing and hierarchical leaf replacement behavior.
+
+### Changed
+- Retag now refreshes SQLite by calling the internal `refresh_file()` path directly instead of shelling back into `python -m app`.
+
 ## 1.6.2 - 2026-03-13
 
 ### Added

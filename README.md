@@ -55,6 +55,41 @@ python3 -m app --cli --db /path/to/photos.db --media-root /path/to/photos --json
 python3 -m app --cli --db /path/to/photos.db --media-root /path/to/photos --errors-log /path/to/errors.jsonl
 ```
 
+## Maintenance CLI
+`indexer2` also includes maintenance commands that operate on media files but stay separate from normal scanning.
+
+### Retag
+`retag` rewrites media metadata from a two-column CSV map and refreshes SQLite after each successful file update.
+
+Dry-run example:
+```bash
+python3 -m app --cli \
+  --db /path/to/photos.db \
+  --media-root /data/photos \
+  --retag-map /path/to/tag-map.csv \
+  --retag-report /tmp/retag-report.csv \
+  --retag-log /tmp/retag.log
+```
+
+Apply example:
+```bash
+python3 -m app --cli \
+  --db /path/to/photos.db \
+  --media-root /data/photos \
+  --db-media-path /data/photos \
+  --retag-map /path/to/tag-map.csv \
+  --retag-report /tmp/retag-report.csv \
+  --retag-log /tmp/retag.log \
+  --retag-apply
+```
+
+Notes:
+- Retag updates `XMP:Subject`, `IPTC:Keywords`, and `XMP-lr:HierarchicalSubject`.
+- Hierarchical replacements only rewrite the leaf token, for example `People|Veronika` -> `People|Baján Veronika (Veronika)`.
+- Retag defaults to dry-run unless `--retag-apply` is passed.
+- Use `--retag-no-reindex` only if you explicitly want metadata changed without refreshing SQLite.
+- MariaDB is not touched by this command.
+
 Fedora example:
 ```bash
 python3 -m app --cli --db /home/user/photos.db --media-root /home/user/Pictures

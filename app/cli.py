@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Callable
 
 from app import __version__
+from app.maintenance.retag import run_retag
 from app.core.config import load_config
 from app.core.db import Database
 from app.core.exiftool import find_exiftool
@@ -103,6 +104,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--errors-log", type=Path, help="Errors JSONL log path")
     parser.add_argument("--config", type=Path, help="Path to config.yaml (default: ./config.yaml)")
     parser.add_argument("--refresh-file", type=Path, help="Refresh exactly one file relative to --media-root")
+    parser.add_argument("--retag-map", type=Path, help="Run maintenance retag mode using a two-column CSV map")
+    parser.add_argument("--retag-report", type=Path, default=Path("retag_report.csv"), help="Retag CSV report path")
+    parser.add_argument("--retag-log", type=Path, default=Path("retag.log"), help="Retag log file path")
+    parser.add_argument("--retag-apply", action="store_true", help="Actually write retag changes; otherwise retag defaults to dry-run")
+    parser.add_argument("--retag-allow-sidecar", action="store_true", help="Allow ExifTool sidecar creation in retag mode")
+    parser.add_argument("--retag-case-insensitive", action="store_true", help="Match old tags case-insensitively in retag mode")
+    parser.add_argument("--retag-no-video", action="store_true", help="Exclude video extensions in retag mode")
+    parser.add_argument("--retag-no-reindex", action="store_true", help="Skip SQLite refresh after successful retag writes")
+    parser.add_argument("--retag-ext", action="append", default=[], help="Extra extension to include in retag mode")
     parser.add_argument("--no-progress", action="store_true", help="Disable progress output")
     parser.add_argument(
         "--progress-every",
@@ -222,6 +232,27 @@ def _write_report_text(payload: dict) -> str:
         lines.append(f"Cancelled: {payload.get('cancelled', False)}")
         return "\n".join(lines)
 
+    if payload.get("mode") == "retag":
+        lines = [
+            f"Version: {payload.get('version', '')}",
+            "Mode: retag",
+            f"Media root: {payload.get('media_root', '')}",
+            f"DB media path: {payload.get('db_media_path', '')}",
+            f"SQLite DB: {payload.get('db', '')}",
+            f"Mapping CSV: {payload.get('map_path', '')}",
+            f"Dry run: {payload.get('dry_run', False)}",
+            f"Reindex enabled: {payload.get('reindex_enabled', False)}",
+            f"Files matched: {payload.get('files', 0)}",
+            f"Changed files: {payload.get('changed_files', 0)}",
+            f"Planned files: {payload.get('planned_files', 0)}",
+            f"Unchanged files: {payload.get('unchanged_files', 0)}",
+            f"Field updates: {payload.get('field_updates', 0)}",
+            f"Errors: {payload.get('errors', 0)}",
+            f"Detailed report: {payload.get('report_path', '')}",
+            f"Detailed log: {payload.get('log_path', '')}",
+        ]
+        return "\n".join(lines)
+
     lines = [
         f"Version: {payload.get('version', '')}",
         f"Media root: {payload.get('media_root', '')}",
@@ -325,7 +356,39 @@ def main(argv: list[str] | None = None) -> int:
     try:
         errors_log_path = _resolve_errors_log_path(args, config, db_path)
         db = Database(Path(":memory:")) if args.dry_run else Database(db_path)
-        if args.refresh_file:
+        if args.retag_map and args.refresh_file:
+            raise ValueError("--retag-map cannot be combined with --refresh-file")
+
+        if args.retag_map:
+            retag_dry_run = args.dry_run or not args.retag_apply
+            if not args.retag_map.is_file():
+                raise ValueError(f"Retag map file not found: {args.retag_map}")
+            if retag_dry_run and not args.dry_run:
+                db.close()
+                db = Database(Path(":memory:"))
+            result_payload = run_retag(
+                db,
+                config,
+                db_path=db_path,
+                media_root=media_root_path,
+                db_media_path=db_media_path,
+                map_path=args.retag_map,
+                report_path=args.retag_report,
+                log_path=args.retag_log,
+                dry_run=retag_dry_run,
+                case_insensitive=args.retag_case_insensitive,
+                allow_sidecar=args.retag_allow_sidecar,
+                no_video=args.retag_no_video,
+                extra_exts=args.retag_ext,
+                no_reindex=args.retag_no_reindex,
+                errors_log_path=errors_log_path,
+            )
+            db.close()
+            payload = {
+                "version": __version__,
+                **result_payload,
+            }
+        elif args.refresh_file:
             refresh_target = args.refresh_file
             if not refresh_target.is_absolute():
                 refresh_target = media_root_path / refresh_target
